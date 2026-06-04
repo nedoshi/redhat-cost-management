@@ -83,7 +83,7 @@ Both Active   → Cost Management shows $ + project attribution
 | Hybrid Cloud Console role | **Cloud Administrator** (or equivalent with `cost-management` write access) — see below |
 | ARO cluster | Existing cluster with **cluster-admin** `oc` access |
 | Azure subscription | Subscription that hosts the ARO cluster |
-| Azure CLI | `az` installed locally or use [Azure Cloud Shell](https://shell.azure.com) |
+| Azure CLI | `az` installed locally or use [Azure Cloud Shell](https://learn.microsoft.com/en-us/azure/cloud-shell/overview) (open from Azure Portal → Cloud Shell icon) |
 | OpenShift CLI | `oc` logged in as cluster-admin |
 
 ### Hybrid Cloud Console roles — what they do and how to set up
@@ -166,7 +166,7 @@ Token auth (`type: token`) skips the service account group setup — the cluster
 | CMMO `last_upload_status` not 202, service-account auth | Service account not in group with `cost-management` settings **write** |
 | Can configure integrations but can't see cost data | Add **Cost administrator** or viewer role separately |
 
-References: [User Access RBAC guide](https://docs.redhat.com/en/documentation/red_hat_hybrid_cloud_console/1-latest/html-single/user_access_configuration_guide_for_role-based_access_control_rbac/index), [Configure User Access for integrations](https://docs.redhat.com/en/documentation/red_hat_hybrid_cloud_console/1-latest/html/configuring_cloud_integrations_for_red_hat_services/assembly-config-user-access-integrations_crc-cloud-integrations), [Limiting access to cost management](https://docs.redhat.com/en/documentation/cost_management_service/1-latest/html/limiting_access_to_cost_management_resources/assembly-limiting-access-cost-resources-rbac).
+References: [User Access RBAC guide](https://docs.redhat.com/en/documentation/red_hat_hybrid_cloud_console/1-latest/html-single/user_access_configuration_guide_for_role-based_access_control_rbac/index), [Configure User Access for integrations](https://docs.redhat.com/en/documentation/red_hat_hybrid_cloud_console/1-latest/html-single/configuring_cloud_integrations_for_red_hat_services/index), [Limiting access to cost management](https://docs.redhat.com/en/documentation/cost_management_service/1-latest/html-single/limiting_access_to_cost_management_resources/index).
 
 ### Gather ARO cluster identifiers
 
@@ -933,8 +933,8 @@ az costmanagement export create \
 
 ## References
 
-- [Red Hat learning path: ARO cost management](https://docs.redhat.com/en/learn/learning-paths/cost-management-azure-red-hat-openshift/)
+- [Red Hat learning path: ARO cost management](https://cloud.redhat.com/learn/cost-management-azure-red-hat-openshift)
 - [Integrating OpenShift data into Cost Management](https://docs.redhat.com/en/documentation/cost_management_service/1-latest/html-single/integrating_openshift_container_platform_data_into_cost_management/index)
 - [Integrating Microsoft Azure data into Cost Management](https://docs.redhat.com/en/documentation/cost_management_service/1-latest/html-single/integrating_microsoft_azure_data_into_cost_management/index)
 - [Track OpenShift costs on Azure (Red Hat blog)](https://www.redhat.com/en/blog/track-your-openshift-costs-more-easily-azure-new-and-improved-capabilities-red-hat-cost-management)
-- [Microsoft: Create a cost export](https://learn.microsoft.com/en-us/azure/cost-management-billing/costs/tutorial-export-acm-data)
+- [Microsoft: Create and manage cost exports](https://learn.microsoft.com/en-us/azure/cost-management-billing/costs/tutorial-improved-exports)
