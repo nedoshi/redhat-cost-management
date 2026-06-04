@@ -80,11 +80,93 @@ Both Active   → Cost Management shows $ + project attribution
 | Requirement | Details |
 |-------------|---------|
 | Red Hat account | Access to [console.redhat.com](https://console.redhat.com) |
-| Hybrid Cloud Console role | **Cloud Administrator** (or equivalent with `cost-management` write access) |
+| Hybrid Cloud Console role | **Cloud Administrator** (or equivalent with `cost-management` write access) — see below |
 | ARO cluster | Existing cluster with **cluster-admin** `oc` access |
 | Azure subscription | Subscription that hosts the ARO cluster |
 | Azure CLI | `az` installed locally or use [Azure Cloud Shell](https://shell.azure.com) |
 | OpenShift CLI | `oc` logged in as cluster-admin |
+
+### Hybrid Cloud Console roles — what they do and how to set up
+
+Red Hat uses **User Access** (RBAC) on [console.redhat.com](https://console.redhat.com). Roles are assigned to **groups**; users and service accounts inherit permissions by group membership.
+
+#### Where Cloud Administrator is used in this guide
+
+| Action | Who needs the role | Why |
+|--------|-------------------|-----|
+| Add/edit Azure integration (Part 2, Cloud tab) | **Your human login** | Create cloud sources, paste Azure SP credentials |
+| Add/edit OpenShift integration manually (Part 1, Option C) | **Your human login** | Register cluster ID on Red Hat tab |
+| CMMO auto-creates integration (`create_source: true`) | **Cluster token or service account** | Operator calls Hybrid Cloud Console APIs to register source |
+| CMMO uploads metrics to Red Hat | **Service account** (if not using token auth) | Needs `cost-management` **settings:write** for Ingress upload API |
+| View Cost Management dashboards | **Any user** with Cost viewer / Cost Administrator | Read-only or full access to reports |
+
+**Cloud Administrator** is a predefined Hybrid Cloud Console role that can *"perform any available operation on any source"* — it covers creating integrations on both **Red Hat** and **Cloud** tabs. That is why the guide lists it as the prerequisite for the person doing the wizard steps.
+
+It is **not** an Azure role and **not** configured in `oc`. It lives entirely in Hybrid Cloud Console User Access.
+
+#### Role hierarchy (who can assign what)
+
+```
+Organization Administrator (Red Hat account owner)
+  └── Creates User Access groups + assigns roles
+        └── Cloud Administrator group  ← you (human) for integration wizards
+        └── Service account group      ← CMMO (optional, for production auth)
+        └── Cost Administrator group   ← finance/ops who only view/edit cost data
+```
+
+Only an **Organization Administrator** (or **User Access Administrator**) can create groups and assign roles. If you lack permissions, ask your org admin.
+
+#### Setup — human user (integration admin)
+
+For the person running Part 1 Option C and Part 2 Step 5:
+
+1. Log in as **Organization Administrator** at [console.redhat.com](https://console.redhat.com).
+2. **Settings** (gear) → **Identity & Access Management** → **User Access** → **Groups**.
+3. **Create group** → name e.g. `cost-management-admins`.
+4. **Add roles** → search **Cloud administrator** → add to group.
+5. **Add members** → add your Red Hat user(s) who will configure integrations.
+6. **Save**.
+
+Verify your login has access:
+
+1. **Settings** → **Integrations** → you should see **Add integration** on both Red Hat and Cloud tabs.
+2. If the button is missing or actions fail with forbidden/403, your user is not in a group with Cloud Administrator (or Cost Administrator).
+
+**Alternative roles** (if org policy restricts Cloud Administrator):
+
+| Role | Enough for this guide? |
+|------|------------------------|
+| **Cloud administrator** | Yes — full integration CRUD on all sources |
+| **Cost administrator** | Partial — full cost-management app access; may not cover all integration source types |
+| Custom role with `cost-management` + `settings` + **write** | Yes — minimum for CMMO service-account uploads |
+| **Cost OpenShift viewer** / **Cost cloud viewer** | No — read-only dashboards only |
+
+#### Setup — service account (CMMO production auth, optional)
+
+If you use `authentication.type: service-account` instead of token auth:
+
+1. **Settings** → **Identity & Access Management** → **Service Accounts** → **Create service account**.
+2. Save **client_id** and **client_secret** (shown once).
+3. **User Access** → **Groups** → create e.g. `cmmo-upload` (org admin only).
+4. **Add roles** → **Cloud administrator** *or* custom role with:
+   - Application: `cost-management`
+   - Resource: `settings`
+   - Operation: `write` (required for Ingress Reports upload API)
+5. **Service accounts** tab → **Add service account** → select the one you created.
+6. Put `client_id` / `client_secret` in the cluster secret (Part 1).
+
+Token auth (`type: token`) skips the service account group setup — the cluster uses its own credentials when `create_source: true`. Service account auth is more reliable on ARO long-term.
+
+#### Quick permission check
+
+| Symptom | Likely missing role |
+|---------|---------------------|
+| Can't click **Add integration** | Cloud Administrator not assigned to your user |
+| Integration wizard fails at final step (403) | Cloud Administrator or Cost Administrator |
+| CMMO `last_upload_status` not 202, service-account auth | Service account not in group with `cost-management` settings **write** |
+| Can configure integrations but can't see cost data | Add **Cost administrator** or viewer role separately |
+
+References: [User Access RBAC guide](https://docs.redhat.com/en/documentation/red_hat_hybrid_cloud_console/1-latest/html-single/user_access_configuration_guide_for_role-based_access_control_rbac/index), [Configure User Access for integrations](https://docs.redhat.com/en/documentation/red_hat_hybrid_cloud_console/1-latest/html/configuring_cloud_integrations_for_red_hat_services/assembly-config-user-access-integrations_crc-cloud-integrations), [Limiting access to cost management](https://docs.redhat.com/en/documentation/cost_management_service/1-latest/html/limiting_access_to_cost_management_resources/assembly-limiting-access-cost-resources-rbac).
 
 ### Gather ARO cluster identifiers
 
