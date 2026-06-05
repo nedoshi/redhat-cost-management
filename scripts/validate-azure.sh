@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Validate Red Hat Cost Management — Azure side
-# Run by CUSTOMER Azure admin (needs az login + subscription access)
-# Send output back to platform team validating from bastion.
+# Requires: az login with access to the target subscription
+# Set required env vars before running (see validation-from-bastion.md)
 set -uo pipefail
 
 # --- Required: set before running or pass as env vars ---
@@ -150,7 +150,7 @@ info "If status is Unavailable: Edit integration (do not add duplicate) after fi
 section "Summary"
 echo "PASS: $PASS  WARN: $WARN  FAIL: $FAIL"
 echo "---"
-echo "Send this full output to the platform team."
+echo "Send this full output if sharing validation results."
 if [[ "$FAIL" -gt 0 ]]; then
   echo "Result: FAILED"
   exit 1
