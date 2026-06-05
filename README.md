@@ -8,8 +8,3 @@ Guides for Red Hat Cost Management on managed OpenShift platforms.
 | [Validation from bastion](validation-from-bastion.md) | Step-by-step checks when you only have private ARO access |
 | [validate-cluster.sh](scripts/validate-cluster.sh) | Cluster/CMMO validation script (run on bastion) |
 | [validate-azure.sh](scripts/validate-azure.sh) | Azure validation script (customer admin runs, sends output back) |
-
-## Related
-
-- [ARO storage](../storage/aro_storage_guide.md)
-- [ARO troubleshooting](../troubleshooting/ARO/)
