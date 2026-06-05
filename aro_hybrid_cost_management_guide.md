@@ -184,16 +184,48 @@ az aro list -o table
 # Note: resourceGroup, location, name
 ```
 
-### Scope: one resource group
+### Scope: one resource group (export) — storage can be elsewhere
 
-This guide scopes everything to **one Azure resource group** — the RG that contains your ARO cluster (`$ARO_RG`). That RG holds the cluster, the cost-export storage account, and the daily billing export. You only see costs for that cluster, not the rest of the subscription.
+Two concepts often get conflated:
 
-Set shell variables used throughout this guide:
+| Concept | What it controls | Must match ARO RG? |
+|---------|------------------|-------------------|
+| **Cost export scope** (`$EXPORT_SCOPE`) | Which Azure resources appear in the billing CSV | Yes — scope to `$ARO_RG` for one cluster |
+| **Storage account + RG** | Where export files are written and read from | **No** — can be a dedicated RG (Red Hat recommends this) |
+
+This guide uses one RG for simplicity. In production, a common pattern is:
+
+```
+$ARO_RG              → ARO cluster + workers (export scope targets this)
+$CM_RG (e.g. rg-cost-management) → storage account only
+```
+
+Hybrid Cloud Console wizard fields:
+
+- **Scope level / export scope** → resource group `$ARO_RG`
+- **Resource group name** (storage) → `$CM_RG` (wherever the storage account lives)
+- **Storage account name** → `$CM_STORAGE`
+
+Cross-RG example variables:
+
+```bash
+export ARO_RG="nddemo-rg"                    # cluster + export scope
+export CM_RG="rg-cost-management"            # storage only (can differ)
+export EXPORT_SCOPE="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${ARO_RG}"
+export STORAGE_ACCOUNT_ID="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${CM_RG}/providers/Microsoft.Storage/storageAccounts/${CM_STORAGE}"
+```
+
+Grant the Red Hat service principal **Storage Blob Data Reader** on the **storage account** (or `$CM_RG`) and **Cost Management Reader** on **`$EXPORT_SCOPE`** (`$ARO_RG`).
+
+### Single-RG shortcut (lab / one cluster)
+
+Everything in `$ARO_RG` — set `CM_RG="$ARO_RG"`:
 
 ```bash
 export SUBSCRIPTION_ID="<your-azure-subscription-id>"
 export TENANT_ID="$(az account show --query tenantId -o tsv)"
-export ARO_RG="<aro-cluster-resource-group>"           # e.g. rg-aro-prod — cluster + storage + export
+export ARO_RG="<aro-cluster-resource-group>"           # export scope (cluster lives here)
+export CM_RG="${CM_RG:-$ARO_RG}"                       # storage RG (defaults to ARO_RG; override for dedicated RG)
 export CM_STORAGE="costmgmt$(openssl rand -hex 4)"     # globally unique, lowercase
 export CM_EXPORT_NAME="rh-cost-export-daily"
 export RH_OCP_SOURCE_NAME="aro-prod-cost-nd"              # OpenShift integration name
@@ -416,37 +448,84 @@ ARO clusters are **not** auto-registered to OCM. That does **not** block Cost Ma
 
 ## Part 2 — Microsoft Azure cloud integration (billing side)
 
-Configure Azure to export daily billing CSV from `$ARO_RG` into a storage account in the **same resource group**, then register that source in Hybrid Cloud Console.
+Configure Azure to export daily billing CSV scoped to `$ARO_RG`, into a storage account (same or different RG), then register that source in Hybrid Cloud Console.
 
-### Step 1: Create storage account in the ARO resource group (Azure CLI)
+### Storage account networking (firewall / no public access)
 
-Storage lives in `$ARO_RG` alongside the cluster — no second resource group.
+There are **two independent callers** to the storage account:
+
+| Caller | Direction | Purpose | Firewall approach |
+|--------|-----------|---------|-------------------|
+| **Azure Cost Management Export** (`Microsoft.CostManagementExports`) | Azure → storage | Writes daily CSV | Enable **Allow trusted Microsoft services** on the storage account |
+| **Red Hat Cost Management** (SaaS) | Red Hat → storage | Reads CSV via service principal | **No published static IP list** |
+
+#### Red Hat IP whitelist — short answer
+
+**Red Hat does not publish a customer-facing IP allowlist** for Cost Management to read Azure Blob Storage. The service polls your storage account over HTTPS using the integration service principal (`Storage Blob Data Reader`), from Red Hat-managed infrastructure outside your tenant.
+
+If policy requires locked-down storage:
+
+1. **Azure export (write path)** — configure on storage **Networking**:
+   - Public network access: **Enabled from selected virtual networks and IP addresses** (not fully open)
+   - Check **Allow Azure services on the trusted services list to access this storage account**
+   - Trusted service: **`Microsoft.CostManagementExports`** ([Microsoft docs](https://learn.microsoft.com/en-us/azure/storage/common/storage-network-security-trusted-azure-services))
+
+2. **Red Hat read (read path)** — options:
+   - **Open a Red Hat support case** and request current egress IP ranges for Cost Management / Sources Azure blob access for your region (only official path for a static allowlist).
+   - **Do not rely on IP rules alone** if Red Hat cannot provide ranges — `Disable public network access` on the storage account will block Red Hat reads unless you use the filtered integration pattern (Azure Function inside your network pushes data to Red Hat).
+   - **Private endpoint only** (public access disabled, no Red Hat IPs): **not supported** for the standard unfiltered integration per current Red Hat + Microsoft documentation.
+
+3. **Storage account creation** — minimum networking for standard integration:
+
+```
+Networking → Public network access: Enabled (from selected networks and IP addresses)
+           → ✓ Allow trusted Microsoft services
+           → Add your corp/VNet rules as needed for admin access
+           → Add Red Hat IPs once provided by support (if required by policy)
+```
+
+4. **Validate export writes** before Red Hat integration:
+
+```bash
+az storage blob list --account-name "$CM_STORAGE" --container-name costexport \
+  --auth-mode key \
+  --account-key "$(az storage account keys list -g "$CM_RG" -n "$CM_STORAGE" --query '[0].value' -o tsv)"
+```
+
+If export blobs never appear, fix trusted-services + export permissions first. If blobs exist but Hybrid Cloud Console shows no Azure data, the blocker is likely Red Hat → storage network access — engage Red Hat support for IP ranges.
+
+> **Policy note:** "No public storage" often means *no anonymous/public blob access* or *restricted public endpoint* — that is compatible if **trusted Microsoft services** is enabled and Red Hat egress IPs are allowlisted once obtained. Fully private-endpoint-only storage without Red Hat connectivity is not compatible with the standard integration.
+
+### Step 1: Create storage account (Azure CLI)
+
+Storage can live in `$CM_RG` (dedicated) or `$ARO_RG` (single-RG shortcut).
 
 ```bash
 # Use the same region as your ARO cluster
 ARO_LOCATION=$(az group show -n "$ARO_RG" --query location -o tsv)
+STORAGE_ACCOUNT_ID="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${CM_RG}/providers/Microsoft.Storage/storageAccounts/${CM_STORAGE}"
 
 az storage account create \
   --name "$CM_STORAGE" \
-  --resource-group "$ARO_RG" \
+  --resource-group "$CM_RG" \
   --location "$ARO_LOCATION" \
   --sku Standard_LRS \
   --kind StorageV2 \
   --min-tls-version TLS1_2
 
 # Confirm
-az storage account show -n "$CM_STORAGE" -g "$ARO_RG" -o table
+az storage account show -n "$CM_STORAGE" -g "$CM_RG" -o table
 ```
 
 ### Step 2: Create service principal for Red Hat access
 
-Red Hat needs **Storage Blob Data Reader** and **Cost Management Reader** on `$ARO_RG`.
+Red Hat needs **Storage Blob Data Reader** on the storage account and **Cost Management Reader** on the export scope (`$EXPORT_SCOPE` / `$ARO_RG`).
 
 ```bash
 SP_JSON=$(az ad sp create-for-rbac \
   --name "$CM_SP_NAME" \
   --role "Storage Blob Data Reader" \
-  --scopes "$EXPORT_SCOPE" \
+  --scopes "$STORAGE_ACCOUNT_ID" \
   --json-auth)
 
 export AZ_CLIENT_ID=$(echo "$SP_JSON" | jq -r .clientId)
@@ -465,7 +544,7 @@ az role assignment create \
   --scope "$EXPORT_SCOPE"
 
 # Verify both roles
-az role assignment list --assignee "$AZ_CLIENT_ID" --scope "$EXPORT_SCOPE" -o table
+az role assignment list --assignee "$AZ_CLIENT_ID" -o table
 ```
 
 ### Step 3: Configure daily cost export
@@ -499,7 +578,7 @@ az storage container create \
   --name costexport \
   --auth-mode login
 
-STORAGE_ACCOUNT_ID="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${ARO_RG}/providers/Microsoft.Storage/storageAccounts/${CM_STORAGE}"
+STORAGE_ACCOUNT_ID="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${CM_RG}/providers/Microsoft.Storage/storageAccounts/${CM_STORAGE}"
 
 # Recurrence start must be today or future (Azure CLI requirement)
 EXPORT_FROM=$(date -u -v+1d +%Y-%m-%dT00:00:00Z 2>/dev/null || date -u -d '+1 day' +%Y-%m-%dT00:00:00Z)
@@ -554,7 +633,7 @@ az storage blob list \
   --account-name "$CM_STORAGE" \
   --container-name costexport \
   --auth-mode key \
-  --account-key "$(az storage account keys list -g "$ARO_RG" -n "$CM_STORAGE" --query '[0].value' -o tsv)" \
+  --account-key "$(az storage account keys list -g "$CM_RG" -n "$CM_STORAGE" --query '[0].value' -o tsv)" \
   -o table
 ```
 
@@ -596,7 +675,7 @@ This is the **billing side**. It tells Red Hat where to read Azure cost CSV file
 | Application | Cost Management |
 | Cost export scope | **I am OK with sending the default data to Cost Management** (unfiltered) |
 | Scope level | **Resource group** |
-| Resource group name | `$ARO_RG` (same RG as cluster and storage) |
+| Resource group name | `$CM_RG` (storage account RG — can differ from `$ARO_RG`) |
 | Storage account name | `$CM_STORAGE` |
 | Cost export name | `rh-cost-export-daily` |
 | Subscription ID | `$SUBSCRIPTION_ID` |
@@ -659,7 +738,7 @@ az storage blob list \
   --container-name costexport \
   --prefix daily/ \
   --auth-mode key \
-  --account-key "$(az storage account keys list -g "$ARO_RG" -n "$CM_STORAGE" --query '[0].value' -o tsv)" \
+  --account-key "$(az storage account keys list -g "$CM_RG" -n "$CM_STORAGE" --query '[0].value' -o tsv)" \
   --query "[].{name:name, lastModified:properties.lastModified}" \
   -o table
 
@@ -705,7 +784,7 @@ USER_ID=$(az ad signed-in-user show --query id -o tsv)
 az role assignment create \
   --assignee "$USER_ID" \
   --role "Storage Blob Data Reader" \
-  --scope "/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${ARO_RG}/providers/Microsoft.Storage/storageAccounts/${CM_STORAGE}"
+  --scope "/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${CM_RG}/providers/Microsoft.Storage/storageAccounts/${CM_STORAGE}"
 ```
 
 Or use the account key:
@@ -715,7 +794,7 @@ az storage blob list \
   --account-name "$CM_STORAGE" \
   --container-name costexport \
   --auth-mode key \
-  --account-key "$(az storage account keys list -g "$ARO_RG" -n "$CM_STORAGE" --query '[0].value' -o tsv)" \
+  --account-key "$(az storage account keys list -g "$CM_RG" -n "$CM_STORAGE" --query '[0].value' -o tsv)" \
   -o table
 ```
 
@@ -729,7 +808,7 @@ az costmanagement export show --name "$CM_EXPORT_NAME" --scope "$EXPORT_SCOPE"
 
 az storage blob list --account-name "$CM_STORAGE" --container-name costexport \
   --auth-mode key \
-  --account-key "$(az storage account keys list -g "$ARO_RG" -n "$CM_STORAGE" --query '[0].value' -o tsv)"
+  --account-key "$(az storage account keys list -g "$CM_RG" -n "$CM_STORAGE" --query '[0].value' -o tsv)"
 
 # Role assignments present
 az role assignment list --assignee "$AZ_CLIENT_ID" -o table
@@ -886,16 +965,17 @@ Replace placeholders, then run in order:
 # --- Variables (one resource group) ---
 export SUBSCRIPTION_ID="<sub-id>"
 export TENANT_ID="$(az account show --query tenantId -o tsv)"
-export ARO_RG="<aro-rg>"                                # cluster + storage + export scope
+export ARO_RG="<aro-rg>"                                # cluster + export scope
+export CM_RG="${CM_RG:-$ARO_RG}"                        # storage RG
 export CM_STORAGE="costmgmt<unique>"
 export CM_EXPORT_NAME="rh-cost-export-daily"
 export CM_SP_NAME="sp-rh-cost-management"
 export EXPORT_SCOPE="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${ARO_RG}"
 ARO_LOCATION=$(az group show -n "$ARO_RG" --query location -o tsv)
-STORAGE_ACCOUNT_ID="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${ARO_RG}/providers/Microsoft.Storage/storageAccounts/${CM_STORAGE}"
+STORAGE_ACCOUNT_ID="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${CM_RG}/providers/Microsoft.Storage/storageAccounts/${CM_STORAGE}"
 
 # --- Azure: storage in ARO RG ---
-az storage account create -n "$CM_STORAGE" -g "$ARO_RG" -l "$ARO_LOCATION" --sku Standard_LRS --kind StorageV2
+az storage account create -n "$CM_STORAGE" -g "$CM_RG" -l "$ARO_LOCATION" --sku Standard_LRS --kind StorageV2
 az storage container create --account-name "$CM_STORAGE" -n costexport --auth-mode login
 
 # --- Azure: SP + roles (both on ARO_RG) ---
