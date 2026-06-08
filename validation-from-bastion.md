@@ -1,6 +1,6 @@
 # Cost Management validation from a bastion host
 
-Use this when validating a **private ARO cluster** from a bastion host. Azure subscription validation requires separate access with the Azure CLI — see [`scripts/validate-azure.sh`](scripts/validate-azure.sh).
+Use this when validating a **private ARO cluster** from a bastion host. Azure subscription validation requires **separate** access with the Azure CLI (usually a workstation with `az login`, not the bastion) — see [`scripts/validate-azure.sh`](scripts/validate-azure.sh).
 
 | Access | What to validate | Script |
 |--------|------------------|--------|
@@ -26,6 +26,8 @@ oc login https://api.<cluster>.<region>.aroapp.io:6443 \
 oc whoami
 oc get nodes
 ```
+
+Some clusters use a custom API domain (e.g. `https://api.<cluster>.<custom-domain>:6443`) instead of `.aroapp.io`. Use the API URL from your cluster install output or `az aro show`.
 
 If `oc login` fails from bastion, fix network path to the private API first — nothing else will work.
 
@@ -66,7 +68,36 @@ last_successful_upload_time: ...
 
 ---
 
-## Step 3 — Hybrid Cloud Console checks
+## Step 3 — Run Azure validation script
+
+Run from a machine with `az login` and access to **both** subscriptions when storage is cross-subscription (export scope sub + storage sub).
+
+```bash
+# Discover cluster RG and subscription (export scope)
+az aro list -o table
+az aro show -g <aro-rg> -n <cluster-name> --query "{rg:resourceGroup, sub:id}" -o table
+
+export SUBSCRIPTION_ID="<export-scope-subscription-id>"   # where ARO_RG / cluster lives
+export CM_SUBSCRIPTION_ID="<storage-subscription-id>"      # optional; omit if same as SUBSCRIPTION_ID
+export ARO_RG="<cluster-resource-group>"                 # export scope RG (NOT storage RG)
+export CM_RG="<storage-resource-group>"
+export CM_STORAGE="<storage-account>"
+export CM_EXPORT_NAME="<export-name>"                      # e.g. rh-cost-export-daily
+export AZ_CLIENT_ID="<service-principal-client-id>"        # from Hybrid Console Cloud integration
+
+chmod +x validate-azure.sh
+./validate-azure.sh
+```
+
+On failure or warnings, the script prints a **Recommendations** section with copy-paste fixes.
+
+**Finding the cost export in Azure Portal:** Exports scoped to a **resource group** (recommended for single-cluster ARO) do **not** appear on the default subscription-level Exports blade. In portal: **Cost Management → Exports → change scope** to resource group `$ARO_RG`, or search for the export name directly.
+
+Cross-subscription storage: see [azure-cross-subscription-setup.md](azure-cross-subscription-setup.md).
+
+---
+
+## Step 4 — Hybrid Cloud Console checks
 
 Browser access to [console.redhat.com](https://console.redhat.com) with a Red Hat account that has integration permissions.
 
@@ -93,12 +124,25 @@ oc patch costmanagementmetricsconfig costmanagementmetricscfg \
 2. Confirm Azure integration exists
 3. Status = **Active**, not **Unavailable**
 
-If **Unavailable**: run [`validate-azure.sh`](scripts/validate-azure.sh) against the Azure subscription, fix reported issues, then **Edit** the integration (do not add a duplicate).
+Wizard values must match what `validate-azure.sh` prints:
 
-### End-to-end sign-off
+| Wizard field | Value |
+|--------------|-------|
+| Scope level | Resource group |
+| Subscription ID | `$SUBSCRIPTION_ID` (export scope sub — **not** storage sub if cross-sub) |
+| Resource group name | `$CM_RG` (where storage account lives — **not** necessarily `$ARO_RG`) |
+| Storage account | `$CM_STORAGE` |
+| Cost export name | `$CM_EXPORT_NAME` |
+| Client ID / Secret | `$AZ_CLIENT_ID` and SP secret |
+
+If **Unavailable**: run [`validate-azure.sh`](scripts/validate-azure.sh), fix reported issues (including **Run now** on the export if no blobs exist), then **Edit** the integration (do not add a duplicate).
+
+---
+
+## End-to-end sign-off
 
 - [ ] `./validate-cluster.sh` → PASS (or WARN only for upload timing)
-- [ ] `./validate-azure.sh` → PASS (requires Azure CLI access to the subscription)
+- [ ] `./validate-azure.sh` → PASS or **PASSED WITH WARNINGS** (WARN for missing blobs is OK until export runs)
 - [ ] Hybrid Cloud Console Red Hat tab → **Active**
 - [ ] Hybrid Cloud Console Cloud tab → **Active**
 - [ ] Cost Management → **OpenShift** tab shows projects (after CMMO upload)
@@ -123,20 +167,16 @@ oc logs -n costmanagement-metrics-operator -l app=costmanagement-metrics-operato
 ```bash
 export SUBSCRIPTION_ID="<subscription-id>"
 export ARO_RG="<export-scope-resource-group>"
-export CM_RG="<storage-resource-group>"
-export CM_STORAGE="<storage-account>"
 export CM_EXPORT_NAME="<export-name>"
-export AZ_CLIENT_ID="<service-principal-client-id>"
 
-./validate-azure.sh
-```
-
-Or individual commands:
-
-```bash
+# Export exists at RG scope (add --subscription if active sub differs)
 az costmanagement export list \
-  --scope "/subscriptions/<sub-id>/resourceGroups/<aro-rg>" -o table
-az role assignment list --assignee "<client-id>" -o table
+  --scope "/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${ARO_RG}" \
+  --subscription "${SUBSCRIPTION_ID}" -o table
+
+# SP roles — use object ID; --all needed for cross-subscription assignments
+SP_OID=$(az ad sp show --id "<client-id>" --query id -o tsv)
+az role assignment list --all --assignee-object-id "$SP_OID" -o table
 ```
 
 ---
@@ -144,5 +184,6 @@ az role assignment list --assignee "<client-id>" -o table
 ## Related
 
 - [Main setup guide](aro_hybrid_cost_management_guide.md)
+- [Cross-subscription Azure setup](azure-cross-subscription-setup.md)
 - [Cluster validation script](scripts/validate-cluster.sh)
 - [Azure validation script](scripts/validate-azure.sh)
