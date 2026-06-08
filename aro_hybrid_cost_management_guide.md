@@ -217,6 +217,35 @@ export STORAGE_ACCOUNT_ID="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${CM
 
 Grant the Red Hat service principal **Storage Blob Data Reader** on the **storage account** (or `$CM_RG`) and **Cost Management Reader** on **`$EXPORT_SCOPE`** (`$ARO_RG`).
 
+### Storage in a different subscription (same tenant)
+
+Export scope and storage can also span **subscriptions** within the same Azure AD tenant. Red Hat does not document this as the primary path — **same subscription as ARO is recommended**.
+
+| Component | Typical subscription |
+|-----------|---------------------|
+| ARO cluster + export scope | `$SUBSCRIPTION_ID` (ARO subscription) |
+| Storage account | `$CM_SUBSCRIPTION_ID` (can differ) |
+| Hybrid Cloud Console **Subscription ID** | `$SUBSCRIPTION_ID` (export scope subscription) |
+
+**Requirements for cross-subscription:**
+
+1. **Azure cost export** — destination storage in Sub B requires **Contributor or Owner** on that storage account during export create/update (control-plane validation). The export managed identity needs **Storage Blob Data Contributor** on Sub B storage.
+2. **Red Hat service principal** — **Storage Blob Data Reader** on storage in Sub B; **Cost Management Reader** on export scope in Sub A.
+3. **Same tenant** — cross-tenant storage is not supported for standard unfiltered integration.
+4. **Storage firewall** — cross-subscription + network-restricted storage is poorly supported by Microsoft; prefer same subscription if policy requires locked-down storage.
+
+Cross-subscription variables:
+
+```bash
+export SUBSCRIPTION_ID="<aro-subscription-id>"           # export scope + Hybrid Console wizard
+export CM_SUBSCRIPTION_ID="<storage-subscription-id>"    # where storage account lives
+
+export EXPORT_SCOPE="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${ARO_RG}"
+export STORAGE_ACCOUNT_ID="/subscriptions/${CM_SUBSCRIPTION_ID}/resourceGroups/${CM_RG}/providers/Microsoft.Storage/storageAccounts/${CM_STORAGE}"
+```
+
+> **Note:** `validate-azure.sh` assumes a single subscription by default. For cross-subscription, set `SUBSCRIPTION_ID` to the ARO subscription and build `STORAGE_ACCOUNT_ID` with `CM_SUBSCRIPTION_ID` as shown above.
+
 ### Single-RG shortcut (lab / one cluster)
 
 Everything in `$ARO_RG` — set `CM_RG="$ARO_RG"`:
